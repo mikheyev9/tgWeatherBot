@@ -2,6 +2,7 @@ from aiogram import Bot, Dispatcher, types, executor
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.dispatcher import FSMContext
+import math
 
 from settings.config import bot_key
 from api_requests import request
@@ -95,6 +96,62 @@ async def user_city_chosen(message: types.Message, state: FSMContext):
     text = f'Запомнил, {user_data.get("waiting_user_city")} ваш город'
     await message.answer(text, reply_markup=markup)
     await state.finish()
+
+
+@dp.message_handler(regexp='История')
+async def get_reports(message: types.Message):
+    current_page = 1
+    reports = orm.get_reports(message.from_user.id)
+    total_pages = math.ceil(len(reports) / 4)
+    text = 'История запросов'
+    inline_markup = types.InlineKeyboardMarkup()
+    for report in reports[:current_page*4]:
+        inline_markup.add(types.InlineKeyboardButton(
+            text=f"{report.city} {report.date.day}.{report.date.month}.{report.date.year}",
+              callback_data=f"report_{report.id}"
+        ))
+    current_page += 1
+    inline_markup.row(
+        types.InlineKeyboardButton(text=f"{current_page-1}/{total_pages}",
+                                    callback_data='None'),
+        types.InlineKeyboardButton(text='Вперёд', callback_data=f"next_{current_page}")
+    )
+    await message.answer(text, reply_markup=inline_markup)
+
+@dp.callback_query_handler(lambda call: True)
+async def callback_query(call, state: FSMContext):
+    query_type = call.data.split('_')[0]
+    async with state.proxy() as data:
+        if query_type == 'None':
+            return
+        if query_type == 'next' or query_type == 'prev':
+            if data.get('current_page', None) is None:
+                data['current_page'] = int(call.data.split('_')[1])
+            data['current_page'] = data['current_page'] + {
+                'next': 1,
+                'prev': -1
+            }[query_type]
+            await state.update_data(current_page=data['current_page'])
+            reports = orm.get_reports(call.from_user.id)
+            total_pages = math.ceil(len(reports) / 4)
+            inline_markup = types.InlineKeyboardMarkup()
+            for report in reports[data['current_page']*4:(data['current_page']+1)*4]:
+                inline_markup.add(types.InlineKeyboardButton(
+                text=f'{report.city} {report.date.day}.{report.date.month}.{report.date.year}',
+                callback_data=f'report_{report.id}'
+            ))
+
+            btns = [
+                types.InlineKeyboardButton(text=f'{data["current_page"]+1}/{total_pages}', callback_data='None')
+            ]
+            if not data['current_page'] == 0:
+                 btns.append(types.InlineKeyboardButton(text='Назад', callback_data=f'prev_{data["current_page"]-1}'))
+            if (data['current_page']+1)*4 < len(reports):
+                btns.append(types.InlineKeyboardButton(text='Вперёд', callback_data=f'next_{data["current_page"]}'))
+            inline_markup.row(*btns)
+
+            await call.message.edit_text(text="История запросов:", reply_markup=inline_markup)
+
 
 async def main_menu():
     markup = types.reply_keyboard.ReplyKeyboardMarkup(row_width=2)
